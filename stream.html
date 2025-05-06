@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web Rover Control</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start;
+            min-height: 100vh;
+            margin: 0;
+            font-family: 'Verdana', sans-serif;
+            background-color: #1e1e2e;
+            color: #ffffff;
+            padding-top: 20px;
+        }
+        h1 {
+            margin-bottom: 10px;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            width: 90%;
+            max-width: 1000px;
+            background: #282a36;
+            border-radius: 12px;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+            padding: 20px;
+        }
+        .video-feed {
+            width: 100%;
+            border-radius: 10px;
+            border: 3px solid #ff79c6;
+            overflow: hidden;
+        }
+        .video-feed img {
+            width: 100%;
+            display: block;
+            border-radius: 10px;
+        }
+        .controls {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin-top: 20px;
+        }
+        .controls button {
+            padding: 12px 20px;
+            margin: 8px;
+            border: none;
+            border-radius: 6px;
+            background: #ff79c6;
+            color: #fff;
+            font-size: 16px;
+            cursor: pointer;
+            transition: 0.3s ease;
+            width: 120px;
+        }
+        .controls button:hover {
+            background: #bd93f9;
+        }
+        .direction-controls {
+            display: flex;
+            gap: 12px;
+        }
+        .status-panel {
+            display: flex;
+            flex-direction: column;
+            width: 100%;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .detection-status {
+            font-size: 18px;
+            font-weight: bold;
+            color: #50fa7b;
+        }
+        .gas-status {
+            font-size: 18px;
+            font-weight: bold;
+            color: #50fa7b;
+        }
+        .alert {
+            color: #ff5555;
+        }
+        .sensor-readings {
+            background: #44475a;
+            padding: 10px 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            width: 100%;
+        }
+        .debug-info {
+            font-size: 14px;
+            color: #bd93f9;
+            margin-top: 5px;
+        }
+        .air-quality-meter {
+            width: 100%;
+            height: 30px;
+            background: #1e1e2e;
+            border-radius: 15px;
+            margin-top: 10px;
+            overflow: hidden;
+            position: relative;
+        }
+        .air-quality-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #50fa7b 0%, #ffb86c 50%, #ff5555 100%);
+            transition: width 0.5s ease;
+            border-radius: 15px;
+        }
+        .sensor-status {
+            font-size: 14px;
+            color: #ff79c6;
+            font-style: italic;
+            margin-top: 5px;
+        }
+        .reset-button {
+            background-color: #bd93f9;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 12px;
+            margin-top: 5px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .reset-button:hover {
+            background-color: #8be9fd;
+        }
+    </style>
+    <script>
+    // Global variable to track sensor status
+    let sensorAvailable = {{ 'true' if sensor_available else 'false' }};
+    let failedReadings = 0;
+    const MAX_FAILURES = 3;
+    
+    function sendCommand(direction) {
+        fetch('/' + direction)
+            .then(response => response.text())
+            .then(data => console.log(data))
+            .catch(error => console.error('Error:', error));
+    }
+
+    document.addEventListener('keydown', function(event) {
+        const keyMap = {
+            'ArrowUp': 'up',
+            'ArrowDown': 'down',
+            'ArrowRight': 'right',
+            'ArrowLeft': 'left',
+            ' ': 'stop'
+        };
+        if (keyMap[event.key]) {
+            document.getElementById(keyMap[event.key]).click();
+        }
+    });
+
+    // Function to reset the ADC sensor
+    function resetSensor() {
+        document.getElementById('sensor-status').textContent = "Resetting sensor...";
+        
+        fetch('/reset_adc')
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    document.getElementById('sensor-status').textContent = "Sensor reset successful - refresh page to continue";
+                    document.getElementById('sensor-status').style.color = "#50fa7b";
+                    sensorAvailable = true;
+                    setTimeout(updateGasData, 1000);
+                } else {
+                    document.getElementById('sensor-status').textContent = "Sensor reset failed - hardware issue may exist";
+                    document.getElementById('sensor-status').style.color = "#ff5555";
+                }
+            })
+            .catch(error => {
+                console.error('Error resetting sensor:', error);
+                document.getElementById('sensor-status').textContent = "Error during reset operation";
+                document.getElementById('sensor-status').style.color = "#ff5555";
+            });
+    }
+
+    // Function to update gas sensor data with error handling
+    function updateGasData() {
+        fetch('/gas_data')
+            .then(response => response.json())
+            .then(data => {
+                // Reset failure counter on successful reading
+                if (data.available) {
+                    failedReadings = 0;
+                }
+                
+                const ppm = parseFloat(data.ppm);
+                const voltage = parseFloat(data.voltage);
+                const rawAdc = data.raw_adc;
+                
+                // Check if we got valid data
+                if (!data.available) {
+                    failedReadings++;
+                    if (failedReadings >= MAX_FAILURES) {
+                        updateSensorStatus(false);
+                    }
+                } else {
+                    updateSensorStatus(true);
+                    
+                    // Update PPM display
+                    const gasElement = document.getElementById('gas-reading');
+                    gasElement.textContent = `Air Quality: ${ppm.toFixed(1)} PPM`;
+                    
+                    // Update debug information
+                    document.getElementById('voltage-reading').textContent = `Sensor Voltage: ${voltage.toFixed(3)}V`;
+                    document.getElementById('raw-adc').textContent = `Raw ADC Value: ${rawAdc}`;
+
+                    // Update the gas status
+                    const gasStatus = document.getElementById('gas-status');
+                    if (data.alert) {
+                        gasStatus.textContent = "WARNING: Poor Air Quality Detected!";
+                        gasStatus.classList.add('alert');
+                    } else {
+                        gasStatus.textContent = "Air Quality Normal";
+                        gasStatus.classList.remove('alert');
+                    }
+                    
+                    // Update the air quality meter
+                    const meter = document.getElementById('air-quality-fill');
+                    // Calculate width percentage (0-3000 PPM scale)
+                    const percentage = Math.min(Math.max(ppm / 3000 * 100, 0), 100);
+                    meter.style.width = percentage + '%';
+                }
+            })
+            .catch(error => {
+                console.error('Error fetching gas data:', error);
+                failedReadings++;
+                if (failedReadings >= MAX_FAILURES) {
+                    updateSensorStatus(false);
+                }
+            });
+    }
+    
+    // Function to update sensor status display
+    function updateSensorStatus(available) {
+        sensorAvailable = available;
+        const statusElement = document.getElementById('sensor-status');
+        const resetButton = document.getElementById('reset-sensor');
+        
+        if (available) {
+            statusElement.textContent = "Sensor Operating Normally";
+            statusElement.style.color = "#50fa7b";
+            resetButton.style.display = "none";
+        } else {
+            statusElement.textContent = "Sensor Error - Data Not Available";
+            statusElement.style.color = "#ff5555";
+            resetButton.style.display = "block";
+            
+            // Update displays to show sensor unavailable
+            document.getElementById('gas-reading').textContent = "Air Quality: Not Available";
+            document.getElementById('gas-status').textContent = "Sensor Offline";
+            document.getElementById('gas-status').classList.remove('alert');
+            document.getElementById('voltage-reading').textContent = "Sensor Voltage: N/A";
+            document.getElementById('raw-adc').textContent = "Raw ADC Value: N/A";
+            document.getElementById('air-quality-fill').style.width = "0%";
+        }
+    }
+
+    // Update gas data every 5 seconds
+    document.addEventListener('DOMContentLoaded', function() {
+        // Initial UI setup based on sensor availability
+        updateSensorStatus(sensorAvailable);
+        
+        // Only start polling if sensor is available
+        if (sensorAvailable) {
+            updateGasData(); // Initial update
+            setInterval(updateGasData, 5000); // Update every 5 seconds
+        }
+    });
+</script>
+
+</head>
+<body>
+    <h1>Web Rover Control</h1>
+    <div class="container">
+        <div class="status-panel">
+            <div class="detection-status">Real-time Crack Detection Active</div>
+            <div class="sensor-readings">
+                <div id="gas-reading">Air Quality: Loading...</div>
+                <div id="gas-status" class="gas-status">Air Quality Status</div>
+                <div class="air-quality-meter">
+                    <div id="air-quality-fill" class="air-quality-fill" style="width: 0%"></div>
+                </div>
+                <div id="voltage-reading" class="debug-info">Sensor Voltage: 0.000V</div>
+                <div id="raw-adc" class="debug-info">Raw ADC Value: 0</div>
+                <div id="sensor-status" class="sensor-status">Checking sensor status...</div>
+                <button id="reset-sensor" class="reset-button" onclick="resetSensor()" style="display: none;">Reset Sensor</button>
+            </div>
+        </div>
+        <div class="video-feed">
+            <img id="video" src="{{ url_for('video_feed') }}" alt="Live Stream">
+        </div>
+        <div class="controls">
+            <button id="up" onclick="sendCommand('up')">Move Forward</button>
+            <div class="direction-controls">
+                <button id="left" onclick="sendCommand('left')">Left</button>
+                <button id="stop" onclick="sendCommand('stop')">Stop</button>
+                <button id="right" onclick="sendCommand('right')">Right</button>
+            </div>
+            <button id="down" onclick="sendCommand('down')">Move Backward</button>
+        </div>
+    </div>
+</body>
+</html>
